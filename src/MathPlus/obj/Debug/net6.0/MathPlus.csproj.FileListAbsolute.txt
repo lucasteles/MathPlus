@@ -1,0 +1,5 @@
+C:\d\MathPlus\src\MathPlus\obj\Debug\net6.0\MathPlus.GeneratedMSBuildEditorConfig.editorconfig
+C:\d\MathPlus\src\MathPlus\obj\Debug\net6.0\MathPlus.AssemblyInfoInputs.cache
+C:\d\MathPlus\src\MathPlus\obj\Debug\net6.0\MathPlus.AssemblyInfo.cs
+C:\d\MathPlus\src\MathPlus\obj\Debug\net6.0\MathPlus.csproj.CoreCompileInputs.cache
+C:\d\MathPlus\src\MathPlus\obj\Debug\net6.0\MathPlus.sourcelink.json
