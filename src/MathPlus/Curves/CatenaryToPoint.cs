@@ -1,246 +1,245 @@
 using System;
 using System.Numerics;
 
-namespace MathPlus
+namespace MathPlus;
+
+/// <summary>A catenary curve from the origin to a point P</summary>
+public struct CatenaryToPoint
 {
-    /// <summary>A catenary curve from the origin to a point P</summary>
-    public struct CatenaryToPoint
+    enum Evaluability
     {
-        enum Evaluability
+        Unknown = 0,
+        Catenary,
+        LinearVertical,
+        LineSegment
+    }
+
+    const int INTERVAL_SEARCH_ITERATIONS = 12;
+    const int BISECT_REFINE_COUNT = 14;
+
+    // data
+    Vector2 p;
+    float s;
+
+    // cached state
+    Evaluability evaluability;
+    float a;
+    Vector2 delta;
+    float arcLenSampleOffset;
+
+    public CatenaryToPoint(Vector2 p, float s)
+    {
+        (this.p, this.s) = (p, s);
+        a = default;
+        delta = default;
+        arcLenSampleOffset = default;
+        evaluability = Evaluability.Unknown;
+    }
+
+    public Vector2 P
+    {
+        get => p;
+        set
         {
-            Unknown = 0,
-            Catenary,
-            LinearVertical,
-            LineSegment
+            if (value != p)
+                (p, evaluability) = (value, Evaluability.Unknown);
         }
+    }
 
-        const int INTERVAL_SEARCH_ITERATIONS = 12;
-        const int BISECT_REFINE_COUNT = 14;
-
-        // data
-        Vector2 p;
-        float s;
-
-        // cached state
-        Evaluability evaluability;
-        float a;
-        Vector2 delta;
-        float arcLenSampleOffset;
-
-        public CatenaryToPoint(Vector2 p, float s)
+    public float Length
+    {
+        get => s;
+        set
         {
-            (this.p, this.s) = (p, s);
-            a = default;
-            delta = default;
-            arcLenSampleOffset = default;
-            evaluability = Evaluability.Unknown;
+            if (Math.Abs(value - s) > 0.001f)
+                (s, evaluability) = (value, Evaluability.Unknown);
         }
+    }
 
-        public Vector2 P
+    public bool IsVertical => MathF.Abs(p.X) < 0.0000001f;
+    public bool IsStraightLine => s <= p.Length() * 1.00005f;
+
+    /// <summary>Evaluates a position on this catenary curve at the given arc length of <c>sEval</c></summary>
+    /// <param name="sEval">The arc length along the curve to sample, relative to the first point</param>
+    /// <param name="nthDerivative">The derivative to sample. 1 = first derivative, 2 = second derivative</param>
+    public Vector2 Eval(float sEval, int nthDerivative = 0)
+    {
+        ReadyForEvaluation();
+        return nthDerivative switch
         {
-            get => p;
-            set
+            0 => evaluability switch
             {
-                if (value != p)
-                    (p, evaluability) = (value, Evaluability.Unknown);
+                Evaluability.Catenary => EvalCatPosByArcLength(sEval),
+                Evaluability.LineSegment => EvalStraightLineByArcLength(sEval),
+                Evaluability.LinearVertical => EvalVerticalLinearApproxByArcLength(sEval),
+                Evaluability.Unknown or _ => throw new Exception(
+                    "Failed to evaluate catenary, couldn't calculate evaluability")
+            },
+            _ => evaluability switch
+            {
+                Evaluability.Catenary => EvalCatDerivByArcLength(sEval, nthDerivative),
+                Evaluability.LineSegment => nthDerivative == 1 ? p.Normalized() : Vector2.Zero,
+                Evaluability.LinearVertical => new Vector2(0,
+                    nthDerivative == 1 ? (sEval < -(p.Y - s) / 2 ? -1 : 1) : 0),
+                Evaluability.Unknown or _ => throw new Exception(
+                    "Failed to evaluate catenary, couldn't calculate evaluability")
             }
+        };
+    }
+
+    // straight line from p0 to p1
+    Vector2 EvalStraightLineByArcLength(float sEval) => p * (sEval / s);
+
+    // almost completely vertical line when p0.X is approx. equal to p1.x
+    Vector2 EvalVerticalLinearApproxByArcLength(float sEval)
+    {
+        var x = Mathf.Lerp(0, p.X, sEval / s); // just to make it not snap to x=0
+        var b = (p.Y - s) / 2; // bottom
+        var seg0 = -b;
+        var y = (sEval < seg0) ? -sEval : -2 * seg0 + sEval;
+        return new Vector2(x, y);
+    }
+
+    // evaluates the position of the catenary at the given arc length, relative to the first point
+    Vector2 EvalCatPosByArcLength(float sEval)
+    {
+        sEval *= p.X.Sign(); // since we go backwards when p0.X < p1.x
+        var x = Catenary.EvalXByArcLength(sEval + arcLenSampleOffset, a) + delta.X;
+        var y = EvalPassingThrough0(x);
+        return new Vector2(x, y);
+    }
+
+    /// <summary>Evaluates the n-th derivative of the catenary at the given arc length</summary>
+    /// <param name="sEval">The arc length, relative to the first point</param>
+    /// <param name="n">The derivative to evaluate</param>
+    Vector2 EvalCatDerivByArcLength(float sEval, int n = 1)
+    {
+        if (n == 0)
+            return EvalCatPosByArcLength(sEval);
+        sEval *= p.X.Sign(); // since we go backwards when p0.X < p1.x
+        return Catenary.EvalDerivByArcLength(sEval + arcLenSampleOffset, a, n);
+    }
+
+    // Evaluate passing through the origin and p
+    float EvalPassingThrough0(float x) => Catenary.Eval(x - delta.X, a) + delta.Y;
+
+    // calculates p, a, delta, arcLenSampleOffset, and which evaluation method to use
+    void ReadyForEvaluation()
+    {
+        if (evaluability != Evaluability.Unknown)
+            return;
+
+        // CASE 1:
+        // first, test if it's a line segment
+        if (IsStraightLine)
+        {
+            evaluability = Evaluability.LineSegment;
+            return;
         }
 
-        public float Length
+        // CASE 2:
+        // check if it's basically a fully vertical hanging chain
+        if (IsVertical)
         {
-            get => s;
-            set
+            evaluability = Evaluability.LinearVertical;
+            return;
+        }
+
+        // CASE 3:
+        // Now we've got a catenary on our hands unless something explodes.
+        var c = MathF.Sqrt(s * s - p.Y * p.Y);
+        var pAbsX = p.X.Abs(); // solve only in x > 0
+
+        // find bounds of the root
+        var
+            xRoot = (p.X * p.X) / (2 * s); // intial guess based on freya's flawless heuristics
+        if (TryFindRootBounds(pAbsX, c, xRoot, out var xRange))
+        {
+            // refine range, if necessary (which is very likely)
+            if (Mathf.Approximately(xRange.Length, 0) == false)
+                RootFindBisections(pAbsX, c, ref xRange,
+                    BISECT_REFINE_COUNT); // Catenary seems valid, with roots inside, refine the range
+            a = xRange.Center; // set a to the middle of the latest range
+            delta = CalcCatenaryDelta(a, p); // find delta to pass through both points
+            arcLenSampleOffset = CalcArcLenSampleOffset(delta.X, a);
+            evaluability = Evaluability.Catenary;
+        }
+        else
+        {
+            // CASE 4:
+            // something exploded, couldn't find a range, so let's use a straight line as a fallback
+            evaluability = Evaluability.LineSegment;
+        }
+    }
+
+    // root solve function
+    static float R(float a, float pAbsX, float c) => 2 * a * Mathf.Sinh(pAbsX / (2 * a)) - c;
+
+    // Calculates the arc length offset so that it's relative to the start of the chain when evaluating by arc length
+    static float CalcArcLenSampleOffset(float deltaX, float a) =>
+        Catenary.EvalArcLen(-deltaX, a);
+
+    // Calculates the required offset to make a catenary pass through the origin and a point p
+    static Vector2 CalcCatenaryDelta(float a, Vector2 p)
+    {
+        Vector2 d;
+        d.X = p.X / 2 - a * Mathf.Asinh(p.Y / (2 * a * Mathf.Sinh(p.X / (2 * a))));
+        d.Y = -Catenary.Eval(d.X, a); // technically -d.X but because of symmetry d.X works too
+        return d;
+    }
+
+    // presumes a decreasing function with one root in x > 0
+    // g = initial guess
+    static bool TryFindRootBounds(float pAbsX, float c, float g, out FloatRange xRange)
+    {
+        var y = R(g, pAbsX, c);
+        xRange = new FloatRange(g, g);
+        if (Mathf.Approximately(y, 0)) // somehow landed *on* our root in our initial guess
+            return true;
+
+        var findingUpper = y > 0;
+
+        for (var n = 1; n <= INTERVAL_SEARCH_ITERATIONS; n++)
+        {
+            if (findingUpper)
             {
-                if (Math.Abs(value - s) > 0.001f)
-                    (s, evaluability) = (value, Evaluability.Unknown);
-            }
-        }
-
-        public bool IsVertical => MathF.Abs(p.X) < 0.0000001f;
-        public bool IsStraightLine => s <= p.Length() * 1.00005f;
-
-        /// <summary>Evaluates a position on this catenary curve at the given arc length of <c>sEval</c></summary>
-        /// <param name="sEval">The arc length along the curve to sample, relative to the first point</param>
-        /// <param name="nthDerivative">The derivative to sample. 1 = first derivative, 2 = second derivative</param>
-        public Vector2 Eval(float sEval, int nthDerivative = 0)
-        {
-            ReadyForEvaluation();
-            return nthDerivative switch
-            {
-                0 => evaluability switch
-                {
-                    Evaluability.Catenary => EvalCatPosByArcLength(sEval),
-                    Evaluability.LineSegment => EvalStraightLineByArcLength(sEval),
-                    Evaluability.LinearVertical => EvalVerticalLinearApproxByArcLength(sEval),
-                    Evaluability.Unknown or _ => throw new Exception(
-                        "Failed to evaluate catenary, couldn't calculate evaluability")
-                },
-                _ => evaluability switch
-                {
-                    Evaluability.Catenary => EvalCatDerivByArcLength(sEval, nthDerivative),
-                    Evaluability.LineSegment => nthDerivative == 1 ? p.Normalized() : Vector2.zero,
-                    Evaluability.LinearVertical => new Vector2(0,
-                        nthDerivative == 1 ? (sEval < -(p.Y - s) / 2 ? -1 : 1) : 0),
-                    Evaluability.Unknown or _ => throw new Exception(
-                        "Failed to evaluate catenary, couldn't calculate evaluability")
-                }
-            };
-        }
-
-        // straight line from p0 to p1
-        Vector2 EvalStraightLineByArcLength(float sEval) => p * (sEval / s);
-
-        // almost completely vertical line when p0.X is approx. equal to p1.x
-        Vector2 EvalVerticalLinearApproxByArcLength(float sEval)
-        {
-            float x = MathPlus.Lerp(0, p.X, sEval / s); // just to make it not snap to x=0
-            float b = (p.Y - s) / 2; // bottom
-            float seg0 = -b;
-            float y = (sEval < seg0) ? -sEval : -2 * seg0 + sEval;
-            return new Vector2(x, y);
-        }
-
-        // evaluates the position of the catenary at the given arc length, relative to the first point
-        Vector2 EvalCatPosByArcLength(float sEval)
-        {
-            sEval *= p.x.Sign(); // since we go backwards when p0.X < p1.x
-            float x = Catenary.EvalXByArcLength(sEval + arcLenSampleOffset, a) + delta.x;
-            float y = EvalPassingThrough0(x);
-            return new Vector2(x, y);
-        }
-
-        /// <summary>Evaluates the n-th derivative of the catenary at the given arc length</summary>
-        /// <param name="sEval">The arc length, relative to the first point</param>
-        /// <param name="n">The derivative to evaluate</param>
-        Vector2 EvalCatDerivByArcLength(float sEval, int n = 1)
-        {
-            if (n == 0)
-                return EvalCatPosByArcLength(sEval);
-            sEval *= p.x.Sign(); // since we go backwards when p0.X < p1.x
-            return Catenary.EvalDerivByArcLength(sEval + arcLenSampleOffset, a, n);
-        }
-
-        // Evaluate passing through the origin and p
-        float EvalPassingThrough0(float x) => Catenary.Eval(x - delta.X, a) + delta.y;
-
-        // calculates p, a, delta, arcLenSampleOffset, and which evaluation method to use
-        void ReadyForEvaluation()
-        {
-            if (evaluability != Evaluability.Unknown)
-                return;
-
-            // CASE 1:
-            // first, test if it's a line segment
-            if (IsStraightLine)
-            {
-                evaluability = Evaluability.LineSegment;
-                return;
-            }
-
-            // CASE 2:
-            // check if it's basically a fully vertical hanging chain
-            if (IsVertical)
-            {
-                evaluability = Evaluability.LinearVertical;
-                return;
-            }
-
-            // CASE 3:
-            // Now we've got a catenary on our hands unless something explodes.
-            float c = MathF.Sqrt(s * s - p.Y * p.Y);
-            float pAbsX = p.x.Abs(); // solve only in x > 0
-
-            // find bounds of the root
-            float
-                xRoot = (p.X * p.X) / (2 * s); // intial guess based on freya's flawless heuristics
-            if (TryFindRootBounds(pAbsX, c, xRoot, out FloatRange xRange))
-            {
-                // refine range, if necessary (which is very likely)
-                if (MathPlus.Approximately(xRange.Length, 0) == false)
-                    RootFindBisections(pAbsX, c, ref xRange,
-                        BISECT_REFINE_COUNT); // Catenary seems valid, with roots inside, refine the range
-                a = xRange.Center; // set a to the middle of the latest range
-                delta = CalcCatenaryDelta(a, p); // find delta to pass through both points
-                arcLenSampleOffset = CalcArcLenSampleOffset(delta.X, a);
-                evaluability = Evaluability.Catenary;
+                // It's positive - we found our lower bound
+                // exponentially search for upper bound
+                xRange.Start = xRange.End;
+                xRange.End = g * MathF.Pow(2, n);
+                y = R(xRange.End, pAbsX, c);
+                if (y < 0)
+                    return true; // upper bound found!
             }
             else
             {
-                // CASE 4:
-                // something exploded, couldn't find a range, so let's use a straight line as a fallback
-                evaluability = Evaluability.LineSegment;
+                // It's negative - we found our upper bound
+                // exponentially search for lower bound
+                xRange.End = xRange.Start;
+                xRange.Start = g * MathF.Pow(2, -n);
+                y = R(xRange.Start, pAbsX, c);
+                if (y > 0)
+                    return true; // lower bound found!
             }
         }
 
-        // root solve function
-        static float R(float a, float pAbsX, float c) => 2 * a * MathPlus.Sinh(pAbsX / (2 * a)) - c;
+        return false; // no root found
+    }
 
-        // Calculates the arc length offset so that it's relative to the start of the chain when evaluating by arc length
-        static float CalcArcLenSampleOffset(float deltaX, float a) =>
-            Catenary.EvalArcLen(-deltaX, a);
+    static void RootFindBisections(float pAbsX, float c, ref FloatRange xRange,
+        int iterationCount)
+    {
+        for (var i = 0; i < iterationCount; i++)
+            RootFindBisection(pAbsX, c, ref xRange);
+    }
 
-        // Calculates the required offset to make a catenary pass through the origin and a point p
-        static Vector2 CalcCatenaryDelta(float a, Vector2 p)
-        {
-            Vector2 d;
-            d.X = p.X / 2 - a * MathPlus.Asinh(p.Y / (2 * a * MathPlus.Sinh(p.X / (2 * a))));
-            d.Y = -Catenary.Eval(d.X, a); // technically -d.X but because of symmetry d.X works too
-            return d;
-        }
-
-        // presumes a decreasing function with one root in x > 0
-        // g = initial guess
-        static bool TryFindRootBounds(float pAbsX, float c, float g, out FloatRange xRange)
-        {
-            float y = R(g, pAbsX, c);
-            xRange = new FloatRange(g, g);
-            if (MathPlus.Approximately(y, 0)) // somehow landed *on* our root in our initial guess
-                return true;
-
-            bool findingUpper = y > 0;
-
-            for (int n = 1; n <= INTERVAL_SEARCH_ITERATIONS; n++)
-            {
-                if (findingUpper)
-                {
-                    // It's positive - we found our lower bound
-                    // exponentially search for upper bound
-                    xRange.a = xRange.b;
-                    xRange.b = g * MathF.Pow(2, n);
-                    y = R(xRange.b, pAbsX, c);
-                    if (y < 0)
-                        return true; // upper bound found!
-                }
-                else
-                {
-                    // It's negative - we found our upper bound
-                    // exponentially search for lower bound
-                    xRange.b = xRange.a;
-                    xRange.a = g * MathF.Pow(2, -n);
-                    y = R(xRange.a, pAbsX, c);
-                    if (y > 0)
-                        return true; // lower bound found!
-                }
-            }
-
-            return false; // no root found
-        }
-
-        static void RootFindBisections(float pAbsX, float c, ref FloatRange xRange,
-            int iterationCount)
-        {
-            for (int i = 0; i < iterationCount; i++)
-                RootFindBisection(pAbsX, c, ref xRange);
-        }
-
-        static void RootFindBisection(float pAbsX, float c, ref FloatRange xRange)
-        {
-            float xInter = xRange.Center; // bisection
-            float yInter = R(xInter, pAbsX, c);
-            if (yInter > 0)
-                xRange.a = xInter; // adjust left bound
-            else
-                xRange.b = xInter; // adjust right bound
-        }
+    static void RootFindBisection(float pAbsX, float c, ref FloatRange xRange)
+    {
+        var xInter = xRange.Center; // bisection
+        var yInter = R(xInter, pAbsX, c);
+        if (yInter > 0)
+            xRange.Start = xInter; // adjust left bound
+        else
+            xRange.End = xInter; // adjust right bound
     }
 }
